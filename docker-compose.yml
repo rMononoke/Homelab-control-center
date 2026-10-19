@@ -1,0 +1,90 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: homelab-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-homelab}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-homelab_secret_pass}
+      POSTGRES_DB: ${POSTGRES_DB:-homelab_db}
+    ports:
+      - "5432:5432"
+    volumes:
+      - pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-homelab} -d ${POSTGRES_DB:-homelab_db}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+  agent:
+    build:
+      context: ./services/agent
+      dockerfile: Dockerfile
+    container_name: homelab-agent
+    restart: unless-stopped
+    volumes:
+      - /var/run/docker.sock:/var/run/docker.sock:rw
+    ports:
+      - "8001:8001"
+    environment:
+      - HOST=0.0.0.0
+      - AGENT_PORT=8001
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8001/healthz')"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  core-api:
+    build:
+      context: ./services/core-api
+      dockerfile: Dockerfile
+    container_name: homelab-core-api
+    restart: unless-stopped
+    ports:
+      - "8000:8000"
+    environment:
+      - HOST=0.0.0.0
+      - CORE_API_PORT=8000
+      - DATABASE_URL=postgresql+asyncpg://${POSTGRES_USER:-homelab}:${POSTGRES_PASSWORD:-homelab_secret_pass}@postgres:5432/${POSTGRES_DB:-homelab_db}
+      - AGENT_URL=http://agent:8001
+    depends_on:
+      postgres:
+        condition: service_healthy
+      agent:
+        condition: service_started
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://localhost:8000/healthz')"]
+      interval: 10s
+      timeout: 5s
+      retries: 3
+
+  bot:
+    build:
+      context: ./services/bot
+      dockerfile: Dockerfile
+    container_name: homelab-bot
+    restart: unless-stopped
+    environment:
+      - BOT_TOKEN=${BOT_TOKEN}
+      - ADMIN_ID=${ADMIN_ID}
+      - CORE_API_URL=http://core-api:8000
+    depends_on:
+      core-api:
+        condition: service_started
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: homelab-frontend
+    restart: unless-stopped
+    ports:
+      - "3000:80"
+    depends_on:
+      core-api:
+        condition: service_started
+
+volumes:
+  pg_data:
